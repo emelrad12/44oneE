@@ -1,18 +1,27 @@
-﻿using System.Runtime.InteropServices;
+﻿using System;
+using System.Runtime.InteropServices;
 
 class LuaJITExample
 {
-    [DllImport("luajit-5.1", CallingConvention = CallingConvention.Cdecl)]
-    public static extern IntPtr luaL_newstate();
+    private const int LUA_GLOBALSINDEX = -10002;
 
     [DllImport("luajit-5.1", CallingConvention = CallingConvention.Cdecl)]
-    public static extern void lua_close(IntPtr luaState);
+    private static extern IntPtr luaL_newstate();
 
     [DllImport("luajit-5.1", CallingConvention = CallingConvention.Cdecl)]
-    public static extern int luaL_loadstring(IntPtr luaState, string script);
+    private static extern void lua_close(IntPtr luaState);
 
     [DllImport("luajit-5.1", CallingConvention = CallingConvention.Cdecl)]
-    public static extern int lua_pcall(IntPtr luaState, int nargs, int nresults, int errfunc);
+    private static extern int luaL_loadstring(IntPtr luaState, string script);
+
+    [DllImport("luajit-5.1", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int lua_pcall(IntPtr luaState, int nargs, int nresults, int errfunc);
+
+    [DllImport("luajit-5.1", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void luaL_openlibs(IntPtr luaState);
+
+    [DllImport("luajit-5.1", CallingConvention = CallingConvention.Cdecl)]
+    public static extern long lua_tointeger(IntPtr luaState, int index);
 
     [DllImport("luajit-5.1", CallingConvention = CallingConvention.Cdecl)]
     public static extern void lua_getfield(IntPtr luaState, int idx, string name);
@@ -23,43 +32,49 @@ class LuaJITExample
     [DllImport("luajit-5.1", CallingConvention = CallingConvention.Cdecl)]
     public static extern void lua_pushnumber(IntPtr luaState, double number);
 
-    static void Main(string[] args)
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void LuaCallback(IntPtr x);
+
+    private delegate void ForLuaCallback(int x);
+
+    private static LuaCallback luaCallbackDelegate;
+    private static IntPtr luaState;
+
+    private static void SomeHostFunction(int x)
     {
-        IntPtr luaState = luaL_newstate();
-        if (luaState == IntPtr.Zero)
-        {
-            Console.WriteLine("Failed to initialize LuaJIT.");
-            return;
-        }
+        Console.WriteLine("Lua called host with : " + x);
+    }
 
-        string luaScript = @"
-        function add(a, b)
-            return a + b
-        end
+    static void Main()
+    {
+        luaState = luaL_newstate();
+        luaL_openlibs(luaState);
+        var luaScript = @"
+            local ffi = require('ffi')
+            ffi.cdef[[
+                typedef void (*callback_t)(void(*x)(int));
+            ]]
+            function lua_callback(some_host_function)
+                print('host called lua ptr')
+                some_host_function(123456)
+            end
+            function get_ptr()
+                local cb_ptr = ffi.cast('callback_t', lua_callback)
+                cb_ptr = ffi.cast(""void(*)()"", cb_ptr)
+                cb_ptr = ffi.cast('long long', cb_ptr)
+                return tonumber(cb_ptr)
+            end
         ";
-
-        if (luaL_loadstring(luaState, luaScript) != 0 || lua_pcall(luaState, 0, 0, 0) != 0)
-        {
-            Console.WriteLine("Error loading script.");
-            lua_close(luaState);
-            return;
-        }
-
-        //-10002 is a magic number for global variable stolen from the c api header.
-        lua_getfield(luaState, -10002, "add");
+        luaL_loadstring(luaState, luaScript);
+        lua_pcall(luaState, 0, 0, 0);
+        lua_getfield(luaState, -10002, "get_ptr");
         lua_pushnumber(luaState, 10);
         lua_pushnumber(luaState, 20);
-
-        if (lua_pcall(luaState, 2, 1, 0) != 0)
-        {
-            Console.WriteLine("Error calling Lua function.");
-        }
-        else
-        {
-            double result = lua_tonumber(luaState, -1);
-            Console.WriteLine("Result of add(10, 20): " + result);
-        }
-
+        var res = lua_pcall(luaState, 2, 1, 0);
+        if (res != 0) throw new("Error calling lua function");
+        var result2 = lua_tointeger(luaState, -1);
+        var luaCallbackPtr = Marshal.GetFunctionPointerForDelegate((ForLuaCallback)SomeHostFunction);
+        Marshal.GetDelegateForFunctionPointer<LuaCallback>((IntPtr)result2)(luaCallbackPtr);
         lua_close(luaState);
     }
 }
